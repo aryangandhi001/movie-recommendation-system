@@ -1,17 +1,20 @@
-# Movie Recommendation System
+# Movie & TV Recommendation System
 
-A movie recommender trained on the [MovieLens](https://grouplens.org/datasets/movielens/) dataset (`ml-latest-small`:
-~100,000 ratings from 600 users on ~9,700 movies) — the same style of data Netflix-era
-recommender research was built on.
+A content-based recommender covering **Hollywood and Bollywood movies and TV series
+released 2005-2025**, built on live data from [TMDB](https://www.themoviedb.org/).
 
-Two complementary approaches are implemented:
+## Approach
 
-- **Collaborative filtering** (`src/train_cf.py`) — matrix factorization (SVD) over the
-  user-item rating matrix. Learns from patterns like "users who rated similarly to you
-  also liked X." Powers personalized "recommended for you" style suggestions.
-- **Content-based filtering** (`src/content_based.py`) — TF-IDF over movie genres/tags
-  with cosine similarity. Powers "because you watched X, you might like Y" style
-  suggestions, and works even for movies with few ratings (no cold-start problem).
+TMDB doesn't expose individual users' rating histories, so classic collaborative
+filtering ("users like you also liked...") isn't possible on this data. Instead:
+
+- **Content-based recommendations** (`src/content_based.py`) — TF-IDF over each
+  title's genres + plot overview, ranked by cosine similarity. Powers
+  "because you watched X, you might like Y" for any movie or show, regardless of
+  how many ratings it has (no cold-start problem).
+- **Trending ranking** — an IMDB-style Bayesian weighted rating
+  (`vote_average` pulled toward the global mean based on `vote_count`), so a
+  5.0★ title with 3 votes doesn't outrank an 8.5★ title with 5,000 votes.
 
 ## Setup
 
@@ -19,18 +22,23 @@ Two complementary approaches are implemented:
 python -m venv .venv
 .venv\Scripts\activate      # Windows
 pip install -r requirements.txt
-python -m src.data           # downloads and caches the MovieLens dataset
 ```
 
-## Usage
-
-Train and evaluate the collaborative filtering model:
+Get a free TMDB API Read Access Token at https://www.themoviedb.org/settings/api,
+then set it as an environment variable:
 
 ```bash
-python -m src.train_cf
+set TMDB_TOKEN=your_token_here      # Windows cmd
+$env:TMDB_TOKEN="your_token_here"   # PowerShell
 ```
 
-Try content-based similarity search:
+Fetch the dataset (Hollywood + Bollywood, movies + TV, 2005-2025):
+
+```bash
+python -m src.tmdb_data
+```
+
+Build the recommender index:
 
 ```bash
 python -m src.content_based
@@ -46,9 +54,7 @@ python app.py
 
 ```
 src/
-  data.py            # downloads/loads MovieLens ratings + movie metadata
-  train_cf.py        # SVD-based collaborative filtering, evaluates RMSE
-  content_based.py   # TF-IDF + cosine similarity over genres
-  evaluate.py         # shared metrics
+  tmdb_data.py       # fetches + caches titles from the TMDB API
+  content_based.py   # TF-IDF + cosine similarity, trending ranking
 app.py               # Gradio demo
 ```

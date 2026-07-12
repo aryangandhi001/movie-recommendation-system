@@ -1,36 +1,55 @@
-"""Content-based recommender: TF-IDF over movie genres + cosine similarity.
+"""Content-based recommender over TMDB titles: TF-IDF (genres + overview text)
++ cosine similarity, with a popularity/rating-weighted "trending" ranking.
 
-Unlike collaborative filtering, this doesn't need any rating history for a movie,
-so it works even for brand-new or rarely-rated titles ("because you watched X...").
+Note: TMDB doesn't expose individual user rating histories, so true collaborative
+filtering ("users like you also liked...") isn't possible on this data. This
+recommender instead combines content similarity with a popularity signal.
 """
 
 from pathlib import Path
 
 import joblib
+import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.neighbors import NearestNeighbors
 
-from src.data import load_movielens
+from src.tmdb_data import load_titles
 
 MODEL_PATH = Path("models/content_model.joblib")
+MIN_VOTE_COUNT = 20  # filter out obscure titles with too few votes to trust vote_average
+
+
+def _weighted_rating(df: pd.DataFrame, m: int = MIN_VOTE_COUNT) -> pd.Series:
+    """IMDB-style Bayesian weighted rating: pulls low-vote-count titles toward
+    the global mean so a 10.0 from 3 votes doesn't outrank a 8.5 from 5,000."""
+    C = df["vote_average"].mean()
+    v = df["vote_count"]
+    R = df["vote_average"]
+    return (v / (v + m)) * R + (m / (v + m)) * C
 
 
 def build():
-    _, movies = load_movielens()
-    genre_text = movies["genres"].str.replace("|", " ", regex=False)
+    titles = load_titles()
+    titles = titles[titles["vote_count"] >= 5].reset_index(drop=True)
+    titles["weighted_rating"] = _weighted_rating(titles)
 
-    vectorizer = TfidfVectorizer()
-    genre_vectors = vectorizer.fit_transform(genre_text)
+    text = (
+        titles["genres"].str.replace("|", " ", regex=False).fillna("")
+        + " " + titles["overview"].fillna("")
+    )
+
+    vectorizer = TfidfVectorizer(stop_words="english", max_features=20_000)
+    vectors = vectorizer.fit_transform(text)
 
     nn = NearestNeighbors(metric="cosine", algorithm="brute")
-    nn.fit(genre_vectors)
+    nn.fit(vectors)
 
     MODEL_PATH.parent.mkdir(exist_ok=True)
     joblib.dump(
-        {"vectorizer": vectorizer, "nn": nn, "genre_vectors": genre_vectors, "movies": movies},
+        {"vectorizer": vectorizer, "nn": nn, "vectors": vectors, "titles": titles},
         MODEL_PATH,
     )
-    print(f"Saved content-based index to {MODEL_PATH} ({len(movies):,} movies)")
+    print(f"Saved content-based index to {MODEL_PATH} ({len(titles):,} titles)")
 
 
 class ContentRecommender:
@@ -39,33 +58,48 @@ class ContentRecommender:
             build()
         state = joblib.load(model_path)
         self.nn = state["nn"]
-        self.genre_vectors = state["genre_vectors"]
-        self.movies = state["movies"]
-        self.title_to_index = {t: i for i, t in enumerate(self.movies["title"])}
+        self.vectors = state["vectors"]
+        self.titles = state["titles"]
+        self._label_to_index = {
+            self._label(row): i for i, row in self.titles.iterrows()
+        }
 
-    def find_titles(self, query: str, limit: int = 10):
-        query = query.lower()
-        matches = self.movies[self.movies["title"].str.lower().str.contains(query, regex=False)]
-        return matches["title"].tolist()[:limit]
+    @staticmethod
+    def _label(row) -> str:
+        kind = "Movie" if row["media_type"] == "movie" else "TV"
+        return f"{row['title']} ({row['year']}) [{kind}]"
 
-    def recommend(self, title: str, k: int = 10):
-        if title not in self.title_to_index:
+    def all_labels(self) -> list[str]:
+        return list(self._label_to_index.keys())
+
+    def trending(self, k: int = 10, media_type: str | None = None) -> pd.DataFrame:
+        df = self.titles
+        if media_type:
+            df = df[df["media_type"] == media_type]
+        return df.sort_values("weighted_rating", ascending=False).head(k)
+
+    def recommend(self, label: str, k: int = 10):
+        if label not in self._label_to_index:
             return []
-        idx = self.title_to_index[title]
-        distances, indices = self.nn.kneighbors(self.genre_vectors[idx], n_neighbors=k + 1)
+        idx = self._label_to_index[label]
+        distances, indices = self.nn.kneighbors(self.vectors[idx], n_neighbors=k + 1)
         results = []
         for dist, i in zip(distances[0], indices[0]):
             if i == idx:
                 continue
-            row = self.movies.iloc[i]
-            results.append((row["title"], row["genres"], 1 - float(dist)))
+            row = self.titles.iloc[i]
+            results.append((self._label(row), row["genres"], 1 - float(dist)))
         return results[:k]
 
 
 if __name__ == "__main__":
     build()
     rec = ContentRecommender()
-    sample = rec.movies.iloc[0]["title"]
+    sample = rec.all_labels()[0]
     print(f"Because you watched: {sample}")
-    for title, genres, sim in rec.recommend(sample):
-        print(f"  {sim:.3f}  {title}  [{genres}]")
+    for label, genres, sim in rec.recommend(sample):
+        print(f"  {sim:.3f}  {label}  [{genres}]")
+
+    print("\nTop trending overall:")
+    for _, row in rec.trending(10).iterrows():
+        print(f"  {row['weighted_rating']:.2f}  {rec._label(row)}")

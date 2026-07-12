@@ -1,71 +1,57 @@
-"""Gradio demo for the movie recommender: two tabs, two recommendation styles."""
+"""Gradio demo: content-based "similar titles" search + trending rankings
+over Hollywood/Bollywood movies and TV series (2005-2025)."""
 
 import gradio as gr
 
 from src.content_based import ContentRecommender
-from src.data import load_movielens
-from src.train_cf import CFRecommender
 
-ratings, movies = load_movielens()
-movie_id_to_title = dict(zip(movies["movieId"], movies["title"]))
-content_rec = ContentRecommender()
-cf_rec = CFRecommender()
-
-KNOWN_USER_IDS = sorted(ratings["userId"].unique().tolist())
+rec = ContentRecommender()
+ALL_LABELS = sorted(rec.all_labels())
 
 
-def recommend_similar(title: str):
-    if not title:
-        return "Pick a movie first."
-    results = content_rec.recommend(title, k=10)
+def recommend_similar(label: str):
+    if not label:
+        return "Pick a title first."
+    results = rec.recommend(label, k=10)
     if not results:
-        return f"No match found for '{title}'."
-    lines = [f"Because you watched **{title}**:\n"]
-    for rec_title, genres, sim in results:
-        lines.append(f"- **{rec_title}** ({genres}) — similarity {sim:.2f}")
+        return f"No match found for '{label}'."
+    lines = [f"Because you watched **{label}**:\n"]
+    for rec_label, genres, sim in results:
+        lines.append(f"- **{rec_label}** ({genres}) — similarity {sim:.2f}")
     return "\n".join(lines)
 
 
-def recommend_for_user(user_id: int):
-    if user_id is None:
-        return "Pick a user first."
-    rated = set(ratings.loc[ratings["userId"] == user_id, "movieId"])
-    results = cf_rec.recommend(int(user_id), rated, k=10)
-    if not results:
-        return f"No recommendations available for user {user_id}."
-    lines = [f"Recommended for **user {user_id}** ({len(rated)} movies already rated):\n"]
-    for movie_id, score in results:
-        title = movie_id_to_title.get(movie_id, f"movie {movie_id}")
-        lines.append(f"- **{title}** — predicted rating {score:.2f}")
+def show_trending(media_type: str):
+    mt = {"Movies": "movie", "TV Series": "tv", "Both": None}[media_type]
+    df = rec.trending(k=15, media_type=mt)
+    lines = ["**Top trending:**\n"]
+    for _, row in df.iterrows():
+        kind = "Movie" if row["media_type"] == "movie" else "TV"
+        lines.append(
+            f"- **{row['title']}** ({row['year']}) [{kind}] — "
+            f"{row['weighted_rating']:.1f}★ ({int(row['vote_count']):,} votes) — {row['genres']}"
+        )
     return "\n".join(lines)
 
 
-with gr.Blocks(title="Movie Recommender") as demo:
+with gr.Blocks(title="Movie & TV Recommender") as demo:
     gr.Markdown(
-        "# Movie Recommendation System\n"
-        "Trained on the MovieLens dataset (100k ratings, 610 users, ~9,700 movies)."
+        "# Movie & TV Recommendation System\n"
+        "Hollywood + Bollywood, movies + TV series, 2005–2025 — live data from TMDB."
     )
 
-    with gr.Tab("Similar movies (content-based)"):
-        gr.Markdown("Pick a movie you like — recommends similar movies by genre.")
-        title_input = gr.Dropdown(
-            choices=sorted(movies["title"].tolist()),
-            label="Movie",
-            filterable=True,
-        )
-        similar_btn = gr.Button("Find similar movies")
+    with gr.Tab("Similar titles"):
+        gr.Markdown("Pick a movie or show you like — recommends similar titles by genre + plot.")
+        title_input = gr.Dropdown(choices=ALL_LABELS, label="Title", filterable=True)
+        similar_btn = gr.Button("Find similar titles")
         similar_output = gr.Markdown()
         similar_btn.click(recommend_similar, inputs=title_input, outputs=similar_output)
 
-    with gr.Tab("Recommended for you (collaborative filtering)"):
-        gr.Markdown(
-            "Pick a user ID from the dataset — recommends movies based on rating patterns "
-            "of similar users."
-        )
-        user_input = gr.Dropdown(choices=KNOWN_USER_IDS, label="User ID")
-        user_btn = gr.Button("Get recommendations")
-        user_output = gr.Markdown()
-        user_btn.click(recommend_for_user, inputs=user_input, outputs=user_output)
+    with gr.Tab("Trending"):
+        media_filter = gr.Radio(["Both", "Movies", "TV Series"], value="Both", label="Filter")
+        trending_output = gr.Markdown()
+        media_filter.change(show_trending, inputs=media_filter, outputs=trending_output)
+        demo.load(show_trending, inputs=media_filter, outputs=trending_output)
 
 if __name__ == "__main__":
     demo.launch()
