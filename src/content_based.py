@@ -9,9 +9,11 @@ recommender instead combines content similarity with a popularity signal.
 from pathlib import Path
 
 import joblib
+import numpy as np
 import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.neighbors import NearestNeighbors
+from sklearn.preprocessing import normalize as l2_normalize
 
 from src.tmdb_data import load_titles
 
@@ -63,6 +65,12 @@ class ContentRecommender:
         self._label_to_index = {
             self._label(row): i for i, row in self.titles.iterrows()
         }
+        self._tmdb_id_to_index = {
+            (row["tmdb_id"], row["media_type"]): i for i, row in self.titles.iterrows()
+        }
+        wr = self.titles["weighted_rating"].to_numpy()
+        wr_range = wr.max() - wr.min()
+        self._trending_norm = (wr - wr.min()) / wr_range if wr_range > 0 else np.zeros_like(wr)
 
     @staticmethod
     def _label(row) -> str:
@@ -91,6 +99,38 @@ class ContentRecommender:
             results.append((self._label(row), row["genres"], 1 - float(dist)))
         return results[:k]
 
+    def recommend_for_profile(self, liked_labels: list[str], k: int = 10, content_weight: float = 0.7):
+        """Personalized recommendations from a small set of titles a user says they
+        like: builds a taste-profile vector (mean of their TF-IDF vectors) and ranks
+        the catalog against it, blended with the trending/quality signal so results
+        favor well-regarded titles, not just the narrowest genre match."""
+        liked_indices = [self._label_to_index[l] for l in liked_labels if l in self._label_to_index]
+        if not liked_indices:
+            return []
+
+        profile_vector = np.asarray(self.vectors[liked_indices].mean(axis=0))
+        profile_vector = l2_normalize(profile_vector)
+        content_scores = np.asarray(self.vectors @ profile_vector.T).flatten()
+
+        final_scores = content_weight * content_scores + (1 - content_weight) * self._trending_norm
+
+        ranked = np.argsort(-final_scores)
+        results = []
+        for i in ranked:
+            if i in liked_indices:
+                continue
+            row = self.titles.iloc[i]
+            results.append((self._label(row), row["genres"], float(final_scores[i])))
+            if len(results) >= k:
+                break
+        return results
+
+    def label_for_tmdb_id(self, tmdb_id: int, media_type: str = "movie") -> str | None:
+        idx = self._tmdb_id_to_index.get((tmdb_id, media_type))
+        if idx is None:
+            return None
+        return self._label(self.titles.iloc[idx])
+
 
 if __name__ == "__main__":
     build()
@@ -103,3 +143,8 @@ if __name__ == "__main__":
     print("\nTop trending overall:")
     for _, row in rec.trending(10).iterrows():
         print(f"  {row['weighted_rating']:.2f}  {rec._label(row)}")
+
+    liked = rec.all_labels()[:3]
+    print(f"\nTaste-profile recommendations for someone who likes: {liked}")
+    for label, genres, score in rec.recommend_for_profile(liked):
+        print(f"  {score:.3f}  {label}  [{genres}]")

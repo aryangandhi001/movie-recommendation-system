@@ -7,5 +7,5 @@ models/
 .ipynb_checkpoints/
 *.egg-info/
 .pytest_cache/
-gradio.log
+gradio*.log
 .gradio/
