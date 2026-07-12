@@ -1,6 +1,8 @@
 """Gradio demo: content-based "similar titles" search + trending rankings
 over Hollywood/Bollywood movies and TV series (2005-2025)."""
 
+import os
+
 import gradio as gr
 
 from src.content_based import ContentRecommender
@@ -54,4 +56,4 @@ with gr.Blocks(title="Movie & TV Recommender") as demo:
         demo.load(show_trending, inputs=media_filter, outputs=trending_output)
 
 if __name__ == "__main__":
-    demo.launch()
+    demo.launch(server_name="0.0.0.0", server_port=int(os.environ.get("PORT", 7860)))
