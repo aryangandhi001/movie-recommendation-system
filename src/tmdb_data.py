@@ -14,7 +14,8 @@ import requests
 API_BASE = "https://api.themoviedb.org/3"
 CACHE_PATH = Path("data/raw/titles.parquet")
 YEAR_START, YEAR_END = 2005, 2025
-MAX_PAGES_PER_QUERY = 25  # 20 results/page -> up to 500 titles per query
+MAX_PAGES_PER_QUERY = 15  # 20 results/page -> up to 300 titles per (query, sort) combo
+MIN_VOTE_COUNT_FOR_VOTE_SORT = 50  # avoid vote_count.desc surfacing obscure titles with 1-2 votes
 
 
 def _headers():
@@ -30,7 +31,9 @@ def _get_genre_map(media_type: str) -> dict[int, str]:
     return {g["id"]: g["name"] for g in resp.json()["genres"]}
 
 
-def _discover(media_type: str, language: str | None, region: str | None, label: str) -> list[dict]:
+def _discover(
+    media_type: str, language: str | None, region: str | None, label: str, sort_by: str
+) -> list[dict]:
     # TMDB's discover query params and response fields use different names for movies.
     query_date_field = "primary_release_date" if media_type == "movie" else "first_air_date"
     response_date_field = "release_date" if media_type == "movie" else "first_air_date"
@@ -41,10 +44,12 @@ def _discover(media_type: str, language: str | None, region: str | None, label: 
         params = {
             f"{query_date_field}.gte": f"{YEAR_START}-01-01",
             f"{query_date_field}.lte": f"{YEAR_END}-12-31",
-            "sort_by": "popularity.desc",
+            "sort_by": sort_by,
             "page": page,
             "include_adult": "false",
         }
+        if sort_by == "vote_count.desc":
+            params["vote_count.gte"] = MIN_VOTE_COUNT_FOR_VOTE_SORT
         if language:
             params["with_original_language"] = language
         if region:
@@ -76,7 +81,7 @@ def _discover(media_type: str, language: str | None, region: str | None, label: 
             break
         time.sleep(0.05)  # stay well under TMDB's rate limit
 
-    print(f"  {label}: {len(results)} titles")
+    print(f"  {label} ({sort_by}): {len(results)} titles")
     return results
 
 
@@ -89,7 +94,12 @@ def fetch_all() -> pd.DataFrame:
     ]
     all_results = []
     for media_type, language, region, label in queries:
-        all_results.extend(_discover(media_type, language, region, label))
+        # popularity.desc surfaces what's trending *right now*; vote_count.desc
+        # surfaces titles with lasting/widespread viewership even if not currently
+        # trending (e.g. older hits) -- without this, well-known-but-not-currently-
+        # trending titles fall outside the page cutoff entirely.
+        all_results.extend(_discover(media_type, language, region, label, "popularity.desc"))
+        all_results.extend(_discover(media_type, language, region, label, "vote_count.desc"))
 
     df = pd.DataFrame(all_results)
     df = df.drop_duplicates(subset=["tmdb_id", "media_type"]).reset_index(drop=True)
